@@ -2,12 +2,14 @@ name = "ava-telegram-backend"
 main = "src/index.js"
 compatibility_date = "2026-09-18"
 
-# Optional reusable Busy Mode. Change this to "true" and redeploy when needed.
-[vars]
-BUSY_MODE = "false"
-
 # Never put TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, or OPENAI_API_KEY here.
 # Add them with `npx wrangler secret put ...` as explained in README.md.
+
+# Required persistent availability-mode storage. Create the namespace, then
+# uncomment this block and insert its ID:
+# [[kv_namespaces]]
+# binding = "AVA_STATE"
+# id = "<your AVA_STATE namespace ID>"
 
 # For durable webhook deduplication, create a KV namespace and add its ID here:
 # [[kv_namespaces]]

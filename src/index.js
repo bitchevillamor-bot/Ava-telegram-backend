@@ -80,6 +80,17 @@ Busy pa po si Boss Allan sa oras na ito. Maaari po kayong mag-iwan ng message at
 const AVAILABLE_STATUS_REPLY = `Status: AVAILABLE
 Available po si Boss Allan sa oras na ito. Maaari po ninyong iwan ang inyong message.`;
 
+const MODES = new Set(["ONLINE", "BUSY", "AUTO"]);
+const MODE_REPLIES = {
+  ONLINE:
+    "✅ AVA is now in ONLINE mode. Boss Allan will handle normal messages himself.",
+  BUSY:
+    "🤖 AVA is now in BUSY mode. I will automatically answer incoming private messages for Boss Allan.",
+  AUTO:
+    "🕒 AVA is now in AUTO mode. I will automatically answer during Sleep Mode from 11:00 PM to 7:00 AM, and remain quiet during normal available hours.",
+};
+const OWNER_ONLY_REPLY = "This command is only available to Boss Allan.";
+
 const AZZY_USERNAME = "twoseventwothree";
 const VOICE_TRANSCRIPTION_FALLBACK =
   "Hi Azzy. Si AVA ito. Hindi ko po malinaw na naintindihan ang voice note mo. Paki-send ulit kapag maaari, at pakikinggan ko itong mabuti.";
@@ -198,17 +209,28 @@ function containsSensitiveInformation(text) {
  * optional @name is deliberately ignored. Commands are also case-insensitive.
  */
 export function getCommand(text) {
-  const match = text.match(/^\s*\/(start|help|status|services|portfolio)(?:@[a-z0-9_]+)?(?=\s|$)/i);
+  const match = text.match(/^\s*\/(start|help|status|services|portfolio|myid|online|busy|auto)(?:@[a-z0-9_]+)?(?=\s|$)/i);
   return match ? match[1].toLowerCase() : null;
 }
 
-/** Build the /status response with the same Sleep and Busy Mode rules as AVA. */
+/** Resolve the mode already loaded for this request, with a safe AUTO default. */
+export function getMode(env) {
+  const configured = String(env.AVA_MODE ?? "").toUpperCase();
+  if (MODES.has(configured)) return configured;
+  // Preserve compatibility while installations migrate from the old variable.
+  if (String(env.BUSY_MODE).toLowerCase() === "true") return "BUSY";
+  return "AUTO";
+}
+
+/** Build /status with both the persisted mode and Allan's effective status. */
 export function chooseStatusReply(env, now = new Date()) {
-  if (isSleepMode(now)) return SLEEPING_STATUS_REPLY;
-  if (String(env.BUSY_MODE).toLowerCase() === "true") {
-    return BUSY_STATUS_REPLY;
-  }
-  return AVAILABLE_STATUS_REPLY;
+  const mode = getMode(env);
+  const status = mode === "BUSY"
+    ? BUSY_STATUS_REPLY
+    : mode === "AUTO" && isSleepMode(now)
+      ? SLEEPING_STATUS_REPLY
+      : AVAILABLE_STATUS_REPLY;
+  return `Mode: ${mode}\n${status}`;
 }
 
 /**
@@ -232,23 +254,23 @@ export function chooseReply(text, env, now = new Date()) {
     return `${BUSINESS_INTRO}\n\n${INQUIRY_QUESTIONS[0]}`;
   }
 
-  if (isSleepMode(now)) return SLEEP_REPLY;
-  if (String(env.BUSY_MODE).toLowerCase() === "true") return BUSY_REPLY;
+  const mode = getMode(env);
+  if (mode === "BUSY") return BUSY_REPLY;
+  if (mode === "AUTO" && isSleepMode(now)) return SLEEP_REPLY;
   return AVAILABLE_REPLY;
 }
 
 /** Select an automatic reply for a connected-account message, or no reply. */
 export function chooseBusinessReply(text, env, now = new Date()) {
-  if (isSleepMode(now)) return BUSINESS_SLEEP_REPLY;
-  if (String(env.BUSY_MODE).toLowerCase() === "true") {
-    return BUSINESS_BUSY_REPLY;
-  }
-  // When Allan is available, AVA stays silent for ordinary personal messages
-  // but retains the established safety, urgent, and business inquiry rules.
+  // Safety and special-purpose handling remains active in every mode.
   if (asksAboutPayment(text)) return PAYMENT_REPLY;
   if (containsSensitiveInformation(text)) return SENSITIVE_REPLY;
   if (isUrgent(text)) return URGENT_REPLY;
   if (isBusinessInquiry(text)) return BUSINESS_INTRO;
+  const mode = getMode(env);
+  if (mode === "BUSY") return BUSINESS_BUSY_REPLY;
+  if (mode === "AUTO" && isSleepMode(now)) return BUSINESS_SLEEP_REPLY;
+  // ONLINE, and AUTO during available hours, stay quiet for ordinary messages.
   return null;
 }
 
@@ -265,10 +287,9 @@ export function isAzzy(from, env) {
 /** Apply the same urgent, Sleep Mode, and Busy Mode priority used by AVA. */
 export function chooseAzzyVoiceReply(transcription, env, now = new Date()) {
   if (isUrgent(transcription)) return AZZY_VOICE_REPLIES.urgent;
-  if (isSleepMode(now)) return AZZY_VOICE_REPLIES.sleeping;
-  if (String(env.BUSY_MODE).toLowerCase() === "true") {
-    return AZZY_VOICE_REPLIES.busy;
-  }
+  const mode = getMode(env);
+  if (mode === "BUSY") return AZZY_VOICE_REPLIES.busy;
+  if (mode === "AUTO" && isSleepMode(now)) return AZZY_VOICE_REPLIES.sleeping;
   return AZZY_VOICE_REPLIES.available;
 }
 
@@ -368,6 +389,44 @@ async function sendTelegramMessage(token, chatId, text, businessConnectionId) {
   }
 }
 
+async function loadMode(env) {
+  if (!env.AVA_STATE) return getMode(env);
+  try {
+    const stored = String((await env.AVA_STATE.get("mode")) ?? "").toUpperCase();
+    return MODES.has(stored) ? stored : "AUTO";
+  } catch {
+    console.error("AVA mode storage is unavailable");
+    return "AUTO";
+  }
+}
+
+async function envWithMode(env) {
+  return { ...env, AVA_MODE: await loadMode(env) };
+}
+
+function isBossAllan(userId, env) {
+  const ownerId = String(env.BOSS_ALLAN_TELEGRAM_USER_ID ?? "").trim();
+  return ownerId !== "" && String(userId) === ownerId;
+}
+
+async function handleControlCommand(command, message, env) {
+  if (command === "myid") return String(message.from?.id ?? "Unknown");
+  if (!isBossAllan(message.from?.id, env)) return OWNER_ONLY_REPLY;
+
+  const mode = command.toUpperCase();
+  if (!env.AVA_STATE) {
+    console.error("AVA_STATE KV binding is not configured");
+    return "AVA mode storage is not configured.";
+  }
+  try {
+    await env.AVA_STATE.put("mode", mode);
+    return MODE_REPLIES[mode];
+  } catch {
+    console.error("Unable to persist AVA mode");
+    return "Unable to update AVA mode right now. Please try again.";
+  }
+}
+
 function rememberLocally(key) {
   if (processedUpdates.size >= MAX_DEDUP_ENTRIES) {
     processedUpdates.delete(processedUpdates.keys().next().value);
@@ -418,6 +477,7 @@ async function handleBusinessMessage(message, env) {
   if (
     !message?.business_connection_id ||
     message.chat?.id == null ||
+    (message.chat.type && message.chat.type !== "private") ||
     message.sender_business_bot ||
     message.from?.is_bot ||
     isFromBossAllan(message, env)
@@ -435,7 +495,7 @@ async function handleBusinessMessage(message, env) {
     : typeof message.caption === "string"
       ? message.caption
       : "";
-  const reply = chooseBusinessReply(text, env);
+  const reply = chooseBusinessReply(text, await envWithMode(env));
   if (!reply) return;
   await sendTelegramMessage(
     env.TELEGRAM_BOT_TOKEN,
@@ -584,7 +644,7 @@ async function handleAzzyVoice(message, env, businessConnectionId) {
     }
   }
 
-  const reply = chooseAzzyVoiceReply(transcription, env);
+  const reply = chooseAzzyVoiceReply(transcription, await envWithMode(env));
   try {
     const audio = await createVoiceReply(reply, env.OPENAI_API_KEY);
     await sendTelegramVoice(
@@ -751,10 +811,22 @@ export default {
       return new Response("OK");
     }
 
+    const command = getCommand(message.text);
+    if (["myid", "online", "busy", "auto"].includes(command)) {
+      await sendTelegramMessage(
+        env.TELEGRAM_BOT_TOKEN,
+        message.chat.id,
+        await handleControlCommand(command, message, env),
+      );
+      return new Response("OK");
+    }
+
+    const requestEnv = await envWithMode(env);
+
     await sendTelegramMessage(
       env.TELEGRAM_BOT_TOKEN,
       message.chat.id,
-      handleMessage(message.text, message.chat.id, env),
+      handleMessage(message.text, message.chat.id, requestEnv),
     );
     return new Response("OK");
   },
