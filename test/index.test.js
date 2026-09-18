@@ -64,12 +64,36 @@ test("recognizes common business inquiry phrases", () => {
     "Magkano website?",
     "Gumagawa ba kayo ng website",
     "Need ko website for my business",
-    "May sample kayo?",
+    "May sample website kayo?",
     "Interested ako sa web design",
+    "web design",
+    "website service",
   ]) {
     assert.equal(isBusinessInquiry(phrase), true, phrase);
   }
   assert.equal(isBusinessInquiry("Hello po"), false);
+  assert.equal(isBusinessInquiry("May sample kayo?"), false);
+  assert.equal(isBusinessInquiry("I need help po"), false);
+  assert.equal(isBusinessInquiry("This site is down"), false);
+  assert.equal(isBusinessInquiry("website"), false);
+});
+
+test("starts Business Inquiry Mode for natural Filipino and English requests", () => {
+  clearInquirySessions();
+  const daytime = new Date("2026-01-01T04:00:00Z");
+  const messages = [
+    "Magkano po website?",
+    "Magkano ang website?",
+    "Pwede po magpagawa ng website?",
+    "Need ko po website para sa business ko",
+    "May sample website po kayo?",
+    "How much is a website?",
+  ];
+
+  messages.forEach((message, index) => {
+    const reply = handleMessage(message, `natural-inquiry-${index}`, {}, daytime);
+    assert.match(reply, /Ano po ang pangalan ninyo\?$/, message);
+  });
 });
 
 test("collects an inquiry one answer at a time and returns a summary", () => {

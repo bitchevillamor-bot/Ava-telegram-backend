@@ -83,18 +83,15 @@ const URGENT_PHRASES = [
   "nagmamadali",
 ];
 
-const BUSINESS_PHRASES = [
-  "magkano website",
-  "website price",
-  "gumagawa ba kayo ng website",
-  "interested ako",
-  "need ko website",
-  "may sample kayo",
-  "website for my business",
-  "gumawa ng website",
-  "web design",
-  "website service",
-];
+// Business inquiries can be phrased in many natural ways. Look for both a
+// website subject and an inquiry intent instead of requiring one exact phrase.
+// Keeping these lists separate also prevents generic messages such as "I need
+// help" or "May sample kayo?" from starting the inquiry questionnaire.
+const WEBSITE_KEYWORD_PATTERN =
+  /\b(?:websites?|web[ -]?pages?|web[ -]?design|sites?)\b/i;
+const BUSINESS_INTENT_PATTERN =
+  /\b(?:magkano|presyo|prices?|pricing|costs?|how\s+much|interested|interest|(?:mag)?pagawa|gumawa|gumagawa|need(?:ed|ing)?|kailangan|samples?|examples?|portfolio|services?|gusto|want(?:ed)?|looking\s+for|for\s+(?:my|our)\s+business)\b/i;
+const WEB_DESIGN_PATTERN = /\bweb[ -]?design\b/i;
 
 const INQUIRY_QUESTIONS = [
   "Ano po ang pangalan ninyo?",
@@ -144,8 +141,10 @@ export function isUrgent(text) {
 }
 
 export function isBusinessInquiry(text) {
-  const normalized = text.toLocaleLowerCase("en-US");
-  return BUSINESS_PHRASES.some((phrase) => normalized.includes(phrase));
+  return (
+    WEB_DESIGN_PATTERN.test(text) ||
+    (WEBSITE_KEYWORD_PATTERN.test(text) && BUSINESS_INTENT_PATTERN.test(text))
+  );
 }
 
 function asksAboutPayment(text) {
