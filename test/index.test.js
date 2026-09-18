@@ -19,3 +19,56 @@ test("urgent messages take priority and Busy Mode is reusable", () => {
   assert.match(chooseReply("Hello", { BUSY_MODE: "true" }, daytime), /Busy/);
   assert.match(chooseReply("Hello", {}, daytime), /Natanggap/);
 });
+
+test("setup registers the current Worker webhook without exposing secrets", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    calls.push({ url, options });
+    return Response.json({ ok: true, result: true });
+  });
+
+  const worker = (await import("../src/index.js")).default;
+  const response = await worker.fetch(
+    new Request("https://ava.example/telegram/setup"),
+    { TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "secret" },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "AVA Telegram webhook connected successfully.");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/setWebhook$/);
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    url: "https://ava.example/telegram/webhook",
+    secret_token: "secret",
+  });
+});
+
+test("webhook info returns only safe status fields", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    Response.json({
+      ok: true,
+      result: {
+        url: "https://ava.example/telegram/webhook",
+        pending_update_count: 2,
+        has_custom_certificate: false,
+        secret_token: "must-not-leak",
+      },
+    }),
+  );
+
+  const worker = (await import("../src/index.js")).default;
+  const response = await worker.fetch(
+    new Request("https://ava.example/telegram/webhook-info"),
+    { TELEGRAM_BOT_TOKEN: "bot-token", TELEGRAM_WEBHOOK_SECRET: "secret" },
+  );
+  const body = await response.json();
+
+  assert.deepEqual(body, {
+    connected: true,
+    url: "https://ava.example/telegram/webhook",
+    pending_update_count: 2,
+    last_error_date: null,
+    last_error_message: null,
+  });
+  assert.doesNotMatch(JSON.stringify(body), /bot-token|secret|must-not-leak/);
+});
