@@ -84,11 +84,17 @@ returns only an allowlist of status fields and never returns either secret.
 ## 5. Test AVA
 
 1. Open the bot's Telegram chat and press **Start**.
-2. Send a normal message. Between 7:00 AM and 11:00 PM in `Asia/Manila`, AVA
+2. Try AVA's commands (command names are case-insensitive and also work with a
+   Telegram bot-name suffix such as `/status@AvaBossAllanbot`):
+   - `/start` introduces AVA and explains how to leave a message.
+   - `/help` shows AVA's short help menu.
+   - `/status` reports whether Boss Allan is **AVAILABLE**, **BUSY**, or
+     **SLEEPING**, using Manila time and the current Busy Mode setting.
+3. Send a normal message. Between 7:00 AM and 11:00 PM in `Asia/Manila`, AVA
    acknowledges it; overnight, AVA sends the Sleep Mode reply.
-3. Send `urgent`, `emergency`, `importante`, `ASAP`, `kailangan agad`, or
+4. Send `urgent`, `emergency`, `importante`, `ASAP`, `kailangan agad`, or
    `nagmamadali` to verify the urgent response.
-4. Open `<WORKER_URL>/` in a browser. It should say
+5. Open `<WORKER_URL>/` in a browser. It should say
    `AVA Telegram backend is online`.
 
 Only text messages receive a reply. Other Telegram updates are acknowledged so

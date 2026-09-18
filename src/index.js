@@ -10,6 +10,29 @@ const URGENT_REPLY =
 const AVAILABLE_REPLY =
   "Hi, si AVA ito, assistant ni Boss Allan. Salamat po sa inyong message. Natanggap ko na po ito at ipapaabot ko kay Boss Allan.";
 
+const START_REPLY =
+  "Hi, si AVA ito, assistant ni Boss Allan. Maaari po kayong mag-iwan ng message dito at ipapaabot ko ito sa kanya. Kung gusto ninyong malaman ang status niya, gamitin ang /status.";
+
+const HELP_REPLY = `AVA can help with:
+• Taking messages for Boss Allan
+• Telling you if Boss Allan is available, busy, or sleeping
+• Handling urgent messages
+• Receiving business and website inquiries
+
+Commands:
+/start - Start chatting with AVA
+/help - Show this help menu
+/status - Check Boss Allan’s availability`;
+
+const SLEEPING_STATUS_REPLY = `Status: SLEEPING
+Tulog pa po si Boss Allan sa oras na ito. Maaari po kayong mag-iwan ng message at ipapaabot ko ito sa kanya kapag available na siya.`;
+
+const BUSY_STATUS_REPLY = `Status: BUSY
+Busy pa po si Boss Allan sa oras na ito. Maaari po kayong mag-iwan ng message at ipapaabot ko ito sa kanya.`;
+
+const AVAILABLE_STATUS_REPLY = `Status: AVAILABLE
+Available po si Boss Allan sa oras na ito. Maaari po ninyong iwan ang inyong message.`;
+
 const URGENT_PHRASES = [
   "urgent",
   "emergency",
@@ -41,10 +64,36 @@ export function isUrgent(text) {
 }
 
 /**
+ * Read a Telegram command from the beginning of a message. Telegram adds the
+ * bot name in group chats (for example, /status@AvaBossAllanbot), so the
+ * optional @name is deliberately ignored. Commands are also case-insensitive.
+ */
+export function getCommand(text) {
+  const match = text.match(/^\s*\/(start|help|status)(?:@[a-z0-9_]+)?(?=\s|$)/i);
+  return match ? match[1].toLowerCase() : null;
+}
+
+/** Build the /status response with the same Sleep and Busy Mode rules as AVA. */
+export function chooseStatusReply(env, now = new Date()) {
+  if (isSleepMode(now)) return SLEEPING_STATUS_REPLY;
+  if (String(env.BUSY_MODE).toLowerCase() === "true") {
+    return BUSY_STATUS_REPLY;
+  }
+  return AVAILABLE_STATUS_REPLY;
+}
+
+/**
  * Busy Mode is deliberately reusable. Set BUSY_MODE=true in Worker variables
  * whenever Boss Allan should be treated as unavailable outside sleeping hours.
  */
 export function chooseReply(text, env, now = new Date()) {
+  // Handle known commands first so words in command arguments cannot
+  // accidentally trigger the urgent-message reply.
+  const command = getCommand(text);
+  if (command === "start") return START_REPLY;
+  if (command === "help") return HELP_REPLY;
+  if (command === "status") return chooseStatusReply(env, now);
+
   if (isUrgent(text)) return URGENT_REPLY;
   if (isSleepMode(now)) return SLEEP_REPLY;
   if (String(env.BUSY_MODE).toLowerCase() === "true") return BUSY_REPLY;
