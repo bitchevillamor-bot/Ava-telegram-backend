@@ -138,6 +138,57 @@ secure, purpose-built lead store with an appropriate privacy policy.
 Other unsupported Telegram updates are acknowledged so Telegram does not
 repeatedly deliver them.
 
+## Connect AVA to Boss Allan's Telegram Business account
+
+Telegram Business users can connect AVA as a **chatbot / chat automation bot**
+so replies are sent from Boss Allan's personal account rather than from the
+ordinary `@AvaBossAllanbot` chat. The normal bot webhook and all commands above
+continue to work after the connection is enabled.
+
+1. In Telegram, enable Telegram Business/Premium if necessary. Open
+   **Settings → Telegram Business → Chatbots** (the label may appear as
+   **Business → Chatbots** on some clients), select `@AvaBossAllanbot`, choose
+   the private chats it may access, and grant permission to reply to messages.
+2. Obtain Boss Allan's numeric Telegram user ID through a trusted method. Store
+   it as an encrypted Worker secret—never put the value in this repository:
+
+   ```sh
+   npx wrangler secret put BOSS_ALLAN_TELEGRAM_USER_ID
+   ```
+
+   This lets AVA reliably ignore messages sent by Boss Allan himself, including
+   after a fresh Worker isolate starts. AVA also learns the owner ID from
+   Telegram's `business_connection` update while an isolate is running.
+3. Create a Cloudflare KV namespace for durable update deduplication:
+
+   ```sh
+   npx wrangler kv namespace create TELEGRAM_UPDATE_DEDUP
+   ```
+
+   Copy the returned namespace ID into a local `[[kv_namespaces]]` block using
+   the commented template in `wrangler.toml`, with the binding name exactly
+   `TELEGRAM_UPDATE_DEDUP`. The Worker has a bounded in-memory fallback for
+   development, but KV is strongly recommended in production so Telegram
+   retries delivered to another Worker isolate do not produce another reply.
+4. Deploy again, then revisit `<WORKER_URL>/telegram/setup`. Setup registers
+   `message`, `business_connection`, `business_message`,
+   `edited_business_message`, and `deleted_business_messages` as allowed
+   update types.
+5. Send Boss Allan a test message from a different personal account. From
+   **11:00 PM through 6:59 AM Asia/Manila**, AVA sends the sleeping response.
+   From **7:00 AM through 10:59 PM**, it sends the busy response only when
+   `BUSY_MODE = "true"`. When available, ordinary personal messages receive no
+   automatic reply; existing urgent, safety, and website-inquiry handling is
+   retained.
+
+AVA uses the incoming `business_connection_id` on Telegram's `sendMessage`
+request, which is what makes the response appear on behalf of Boss Allan's
+connected account. Messages marked as sent by a business bot, messages from a
+bot account, Boss Allan's own messages, edited messages, and deletion updates
+are never answered, preventing reply loops. New business messages are marked
+as processed before delivery is attempted, so each message receives at most
+one automatic-reply attempt.
+
 ## Azzy voice notes
 
 AVA recognizes Azzy by the Telegram username **`twoseventwothree`**. You may
@@ -194,6 +245,8 @@ available again. Urgent messages take priority over both Busy and Sleep modes.
 - Telegram credentials and `OPENAI_API_KEY` live only in Cloudflare's encrypted
   secret store.
 - The Worker does not log message bodies, bot tokens, or secrets.
+- Connected-account IDs are supplied by Telegram or encrypted Worker secrets;
+  no Telegram token or personal account ID is hardcoded.
 - AVA never requests OTPs, passwords, card or banking credentials, crypto seed
   phrases, or other sensitive financial information. If one is sent during an
   inquiry, it is rejected instead of being added to the session.

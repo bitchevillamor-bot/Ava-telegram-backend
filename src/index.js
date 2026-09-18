@@ -4,6 +4,12 @@ const SLEEP_REPLY =
 const BUSY_REPLY =
   "Hi, si AVA ito, assistant ni Boss Allan. Busy pa po ang boss ko sa oras na ito. Maaari po ninyong iwan ang inyong message at ipapaabot ko ito sa kanya kapag available na siya.";
 
+const BUSINESS_SLEEP_REPLY =
+  "Hi 😊 Si AVA ito, assistant ni Boss Allan. Tulog pa po siya sa oras na ito. Maaari po ninyong iwan ang inyong message at ipapaabot ko ito sa kanya kapag gising at available na siya. Salamat po.";
+
+const BUSINESS_BUSY_REPLY =
+  "Hi 😊 Si AVA ito, assistant ni Boss Allan. Busy pa po siya sa oras na ito. Maaari po ninyong iwan ang inyong message at ipapaabot ko ito sa kanya kapag available na siya.";
+
 const URGENT_REPLY =
   "Nagmamadali po ba kayo? Importante po ba ito at hindi maaaring hintayin hanggang matapos ang pagpapahinga o ginagawa ni Boss Allan? Si AVA ito, assistant niya. Maaari po ninyong iwan ang kumpletong message at ipapaabot ko ito sa kanya.";
 
@@ -133,6 +139,15 @@ const inquirySessions = new Map();
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const MAX_SESSIONS = 1_000;
 
+// These caches stop Telegram retries (and repeated delivery of the same
+// business message under a different update id) from generating extra replies.
+// A KV binding makes this durable across Worker isolates; the bounded in-memory
+// cache remains useful locally and when KV has not yet been configured.
+const processedUpdates = new Map();
+const businessConnections = new Map();
+const DEDUP_TTL_SECONDS = 24 * 60 * 60;
+const MAX_DEDUP_ENTRIES = 10_000;
+
 /** Return the current hour (0-23) in the Philippines. */
 export function getManilaHour(date = new Date()) {
   const hour = new Intl.DateTimeFormat("en-US", {
@@ -220,6 +235,21 @@ export function chooseReply(text, env, now = new Date()) {
   if (isSleepMode(now)) return SLEEP_REPLY;
   if (String(env.BUSY_MODE).toLowerCase() === "true") return BUSY_REPLY;
   return AVAILABLE_REPLY;
+}
+
+/** Select an automatic reply for a connected-account message, or no reply. */
+export function chooseBusinessReply(text, env, now = new Date()) {
+  if (isSleepMode(now)) return BUSINESS_SLEEP_REPLY;
+  if (String(env.BUSY_MODE).toLowerCase() === "true") {
+    return BUSINESS_BUSY_REPLY;
+  }
+  // When Allan is available, AVA stays silent for ordinary personal messages
+  // but retains the established safety, urgent, and business inquiry rules.
+  if (asksAboutPayment(text)) return PAYMENT_REPLY;
+  if (containsSensitiveInformation(text)) return SENSITIVE_REPLY;
+  if (isUrgent(text)) return URGENT_REPLY;
+  if (isBusinessInquiry(text)) return BUSINESS_INTRO;
+  return null;
 }
 
 /** Match Azzy by her public username or an optional, more durable user ID. */
@@ -315,13 +345,19 @@ function secretsMatch(received = "", expected = "") {
   return difference === 0;
 }
 
-async function sendTelegramMessage(token, chatId, text) {
+async function sendTelegramMessage(token, chatId, text, businessConnectionId) {
   const response = await fetch(
     `https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        ...(businessConnectionId
+          ? { business_connection_id: businessConnectionId }
+          : {}),
+      }),
     },
   );
 
@@ -330,6 +366,83 @@ async function sendTelegramMessage(token, chatId, text) {
     console.error(`Telegram API request failed with status ${response.status}`);
     throw new Error("Telegram API request failed");
   }
+}
+
+function rememberLocally(key) {
+  if (processedUpdates.size >= MAX_DEDUP_ENTRIES) {
+    processedUpdates.delete(processedUpdates.keys().next().value);
+  }
+  processedUpdates.set(key, Date.now());
+}
+
+async function isDuplicateUpdate(update, env) {
+  const businessMessage = update?.business_message;
+  const key = businessMessage?.business_connection_id && businessMessage?.message_id != null
+    ? `business:${businessMessage.business_connection_id}:${businessMessage.chat?.id}:${businessMessage.message_id}`
+    : update?.update_id != null
+      ? `update:${update.update_id}`
+      : null;
+  if (!key) return false;
+  if (processedUpdates.has(key)) return true;
+
+  if (env.TELEGRAM_UPDATE_DEDUP) {
+    try {
+      if (await env.TELEGRAM_UPDATE_DEDUP.get(key)) return true;
+      // Mark before sending: at-most-once replies are safer than duplicate
+      // automated messages if Telegram retries after a downstream failure.
+      await env.TELEGRAM_UPDATE_DEDUP.put(key, "1", {
+        expirationTtl: DEDUP_TTL_SECONDS,
+      });
+    } catch {
+      console.error("Telegram update deduplication storage is unavailable");
+    }
+  }
+  rememberLocally(key);
+  return false;
+}
+
+function isFromBossAllan(message, env) {
+  const configuredId = String(env.BOSS_ALLAN_TELEGRAM_USER_ID ?? "").trim();
+  const connectionOwnerId = businessConnections.get(
+    String(message.business_connection_id),
+  );
+  return (
+    (configuredId && String(message.from?.id) === configuredId) ||
+    (connectionOwnerId != null && String(message.from?.id) === connectionOwnerId)
+  );
+}
+
+async function handleBusinessMessage(message, env) {
+  // Telegram supplies this field for messages sent by a connected business
+  // bot. Ignoring it prevents AVA (or another automation) from creating loops.
+  if (
+    !message?.business_connection_id ||
+    message.chat?.id == null ||
+    message.sender_business_bot ||
+    message.from?.is_bot ||
+    isFromBossAllan(message, env)
+  ) {
+    return;
+  }
+  if (message.voice?.file_id && isAzzy(message.from, env)) {
+    await handleAzzyVoice(message, env, message.business_connection_id);
+    return;
+  }
+  // Captions can carry urgent/business wording; non-text messages still get
+  // the scheduled sleep or busy notice, but remain silent when Allan is free.
+  const text = typeof message.text === "string"
+    ? message.text
+    : typeof message.caption === "string"
+      ? message.caption
+      : "";
+  const reply = chooseBusinessReply(text, env);
+  if (!reply) return;
+  await sendTelegramMessage(
+    env.TELEGRAM_BOT_TOKEN,
+    message.chat.id,
+    reply,
+    message.business_connection_id,
+  );
 }
 
 async function callTelegramApi(token, method, body) {
@@ -420,9 +533,12 @@ async function createVoiceReply(text, openAiKey) {
   return response.blob();
 }
 
-async function sendTelegramVoice(token, chatId, audio) {
+async function sendTelegramVoice(token, chatId, audio, businessConnectionId) {
   const form = new FormData();
   form.append("chat_id", String(chatId));
+  if (businessConnectionId) {
+    form.append("business_connection_id", businessConnectionId);
+  }
   form.append("voice", audio, "ava-reply.opus");
   const response = await fetch(
     `https://api.telegram.org/bot${encodeURIComponent(token)}/sendVoice`,
@@ -433,7 +549,7 @@ async function sendTelegramVoice(token, chatId, audio) {
   if (result?.ok !== true) throw new Error("Telegram rejected voice delivery");
 }
 
-async function handleAzzyVoice(message, env) {
+async function handleAzzyVoice(message, env, businessConnectionId) {
   let transcription;
   try {
     if (!env.OPENAI_API_KEY) throw new Error("OpenAI is not configured");
@@ -449,6 +565,7 @@ async function handleAzzyVoice(message, env) {
       env.TELEGRAM_BOT_TOKEN,
       message.chat.id,
       VOICE_TRANSCRIPTION_FALLBACK,
+      businessConnectionId,
     );
     return;
   }
@@ -470,10 +587,20 @@ async function handleAzzyVoice(message, env) {
   const reply = chooseAzzyVoiceReply(transcription, env);
   try {
     const audio = await createVoiceReply(reply, env.OPENAI_API_KEY);
-    await sendTelegramVoice(env.TELEGRAM_BOT_TOKEN, message.chat.id, audio);
+    await sendTelegramVoice(
+      env.TELEGRAM_BOT_TOKEN,
+      message.chat.id,
+      audio,
+      businessConnectionId,
+    );
   } catch {
     console.error("Azzy voice reply generation or delivery failed");
-    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, reply);
+    await sendTelegramMessage(
+      env.TELEGRAM_BOT_TOKEN,
+      message.chat.id,
+      reply,
+      businessConnectionId,
+    );
   }
 }
 
@@ -491,6 +618,13 @@ async function setupWebhook(url, env) {
     await callTelegramApi(env.TELEGRAM_BOT_TOKEN, "setWebhook", {
       url: `${url.origin}/telegram/webhook`,
       secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+      allowed_updates: [
+        "message",
+        "business_connection",
+        "business_message",
+        "edited_business_message",
+        "deleted_business_messages",
+      ],
     });
     return new Response("AVA Telegram webhook connected successfully.");
   } catch {
@@ -576,6 +710,29 @@ export default {
       update = await request.json();
     } catch {
       return new Response("Invalid JSON", { status: 400 });
+    }
+
+    if (await isDuplicateUpdate(update, env)) return new Response("OK");
+
+    if (update?.business_connection?.id) {
+      const connection = update.business_connection;
+      if (connection.is_enabled === false) {
+        businessConnections.delete(String(connection.id));
+      } else if (connection.user?.id != null) {
+        businessConnections.set(String(connection.id), String(connection.user.id));
+      }
+      return new Response("OK");
+    }
+
+    if (update?.business_message) {
+      await handleBusinessMessage(update.business_message, env);
+      return new Response("OK");
+    }
+
+    // Edits and deletions are deliberately acknowledged without an automatic
+    // response. Only a newly delivered business_message may trigger AVA.
+    if (update?.edited_business_message || update?.deleted_business_messages) {
+      return new Response("OK");
     }
 
     const message = update?.message;

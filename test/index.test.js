@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   clearInquirySessions,
   chooseReply,
+  chooseBusinessReply,
   chooseAzzyVoiceReply,
   chooseStatusReply,
   getCommand,
@@ -12,6 +13,17 @@ import {
   isSleepMode,
   isUrgent,
 } from "../src/index.js";
+
+function businessWebhookRequest(update) {
+  return new Request("https://ava.example/telegram/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Telegram-Bot-Api-Secret-Token": "secret",
+    },
+    body: JSON.stringify(update),
+  });
+}
 
 function voiceWebhookRequest(username = "twoseventwothree") {
   return new Request("https://ava.example/telegram/webhook", {
@@ -39,6 +51,80 @@ test("uses Manila sleeping hours", () => {
   assert.equal(isSleepMode(new Date("2026-01-01T15:00:00Z")), true); // 11 PM
   assert.equal(isSleepMode(new Date("2026-01-01T22:59:00Z")), true); // 6:59 AM
   assert.equal(isSleepMode(new Date("2026-01-01T23:00:00Z")), false); // 7 AM
+});
+
+test("business replies use exact sleep and busy messages and stay silent when available", () => {
+  const sleeping = new Date("2026-01-01T15:00:00Z");
+  const daytime = new Date("2026-01-01T04:00:00Z");
+  assert.equal(
+    chooseBusinessReply("Hello", {}, sleeping),
+    "Hi 😊 Si AVA ito, assistant ni Boss Allan. Tulog pa po siya sa oras na ito. Maaari po ninyong iwan ang inyong message at ipapaabot ko ito sa kanya kapag gising at available na siya. Salamat po.",
+  );
+  assert.equal(
+    chooseBusinessReply("Hello", { BUSY_MODE: "true" }, daytime),
+    "Hi 😊 Si AVA ito, assistant ni Boss Allan. Busy pa po siya sa oras na ito. Maaari po ninyong iwan ang inyong message at ipapaabot ko ito sa kanya kapag available na siya.",
+  );
+  assert.equal(chooseBusinessReply("Hello", {}, daytime), null);
+  assert.match(chooseBusinessReply("urgent po", {}, daytime), /Nagmamadali/);
+  assert.match(chooseBusinessReply("Need ko website", {}, daytime), /NextPage Digital/);
+});
+
+test("business messages reply on behalf of the connection and are deduplicated", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    calls.push({ url: String(url), body: JSON.parse(options.body) });
+    return Response.json({ ok: true, result: {} });
+  });
+  const worker = (await import("../src/index.js")).default;
+  const env = {
+    TELEGRAM_BOT_TOKEN: "bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "secret",
+    BUSY_MODE: "true",
+    BOSS_ALLAN_TELEGRAM_USER_ID: "100",
+  };
+  const update = {
+    update_id: 5001,
+    business_message: {
+      message_id: 44,
+      business_connection_id: "connection-1",
+      chat: { id: 200 },
+      from: { id: 300, is_bot: false },
+      text: "Hello",
+    },
+  };
+
+  assert.equal((await worker.fetch(businessWebhookRequest(update), env)).status, 200);
+  assert.equal((await worker.fetch(businessWebhookRequest(update), env)).status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].body.chat_id, 200);
+  assert.equal(calls[0].body.business_connection_id, "connection-1");
+  assert.match(calls[0].body.text, /Busy pa po siya/);
+});
+
+test("business updates never reply to Allan, bots, edits, or deletions", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (...args) => {
+    calls.push(args);
+    return Response.json({ ok: true, result: {} });
+  });
+  const worker = (await import("../src/index.js")).default;
+  const env = {
+    TELEGRAM_BOT_TOKEN: "bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "secret",
+    BUSY_MODE: "true",
+    BOSS_ALLAN_TELEGRAM_USER_ID: "100",
+  };
+  const base = {
+    message_id: 1,
+    business_connection_id: "connection-2",
+    chat: { id: 200 },
+    text: "Hello",
+  };
+  await worker.fetch(businessWebhookRequest({ update_id: 5101, business_message: { ...base, from: { id: 100 } } }), env);
+  await worker.fetch(businessWebhookRequest({ update_id: 5102, business_message: { ...base, message_id: 2, from: { id: 400, is_bot: true } } }), env);
+  await worker.fetch(businessWebhookRequest({ update_id: 5103, edited_business_message: base }), env);
+  await worker.fetch(businessWebhookRequest({ update_id: 5104, deleted_business_messages: { business_connection_id: "connection-2", chat: { id: 200 }, message_ids: [1] } }), env);
+  assert.equal(calls.length, 0);
 });
 
 test("urgent messages take priority and Busy Mode is reusable", () => {
@@ -294,6 +380,13 @@ test("setup registers the current Worker webhook without exposing secrets", asyn
   assert.deepEqual(JSON.parse(calls[0].options.body), {
     url: "https://ava.example/telegram/webhook",
     secret_token: "secret",
+    allowed_updates: [
+      "message",
+      "business_connection",
+      "business_message",
+      "edited_business_message",
+      "deleted_business_messages",
+    ],
   });
 });
 
