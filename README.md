@@ -4,6 +4,13 @@ A small, beginner-friendly Telegram webhook built with a Cloudflare Worker. AVA
 identifies herself as **AVA, assistant ni Boss Allan**, follows Manila time, and
 automatically uses Sleep Mode from 11:00 PM until 7:00 AM.
 
+AVA also includes a **Business Inquiry Mode** for NextPage Digital. It detects
+common Filipino and English website-service questions, shares introductory
+pricing and portfolio links, then politely collects lead details one question
+at a time. Answers are held only in a temporary in-memory conversation session
+while the inquiry is being completed; sessions expire after 30 minutes and are
+not permanent storage.
+
 ## Project structure
 
 ```text
@@ -90,12 +97,35 @@ returns only an allowlist of status fields and never returns either secret.
    - `/help` shows AVA's short help menu.
    - `/status` reports whether Boss Allan is **AVAILABLE**, **BUSY**, or
      **SLEEPING**, using Manila time and the current Busy Mode setting.
+   - `/services` shows NextPage Digital's website services and introductory
+     prices (Starter from ₱999, Business from ₱1,999, and custom quotations).
+   - `/portfolio` shares the NextPage Digital and café/restaurant sample sites.
 3. Send a normal message. Between 7:00 AM and 11:00 PM in `Asia/Manila`, AVA
    acknowledges it; overnight, AVA sends the Sleep Mode reply.
 4. Send `urgent`, `emergency`, `importante`, `ASAP`, `kailangan agad`, or
    `nagmamadali` to verify the urgent response.
 5. Open `<WORKER_URL>/` in a browser. It should say
    `AVA Telegram backend is online`.
+
+## Business Inquiry Mode
+
+Send a message such as `magkano website`, `need ko website`, `web design`,
+`website service`, or `may sample kayo`. AVA introduces herself as **AVA,
+assistant ni Boss Allan**, explains NextPage Digital's packages, and shares:
+
+- [NextPage Digital](https://bitchevillamor-bot.github.io/Nextpage-Digital/)
+- [Sample café/restaurant website](https://bitchevillamor-bot.github.io/Tuboy-s-Lopez-demo/)
+
+AVA then asks separately for the customer's name, business name, business
+type, preferred contact, desired website, requested pages/features, and an
+optional approximate budget. After the last answer, AVA returns a formatted
+summary for Boss Allan. Customers can use `/help`, `/status`, `/services`, or
+`/portfolio` without those commands being mistaken for an inquiry answer.
+
+Conversation sessions live only in the running Worker isolate, expire after 30
+minutes, and may disappear sooner if Cloudflare recycles the isolate. For a
+production CRM workflow, the completed summary should later be forwarded to a
+secure, purpose-built lead store with an appropriate privacy policy.
 
 Only text messages receive a reply. Other Telegram updates are acknowledged so
 Telegram does not repeatedly deliver them.
@@ -112,5 +142,10 @@ available again. Urgent messages take priority over both Busy and Sleep modes.
   `X-Telegram-Bot-Api-Secret-Token` header.
 - Both required credentials live only in Cloudflare's encrypted secret store.
 - The Worker does not log message bodies, bot tokens, or secrets.
+- AVA never requests OTPs, passwords, card or banking credentials, crypto seed
+  phrases, or other sensitive financial information. If one is sent during an
+  inquiry, it is rejected instead of being added to the session.
+- AVA does not accept payments. Boss Allan personally confirms any payment
+  instructions.
 - If any credential is accidentally disclosed, revoke/rotate it immediately,
   update the corresponding Cloudflare secret, and register the webhook again.

@@ -22,7 +22,48 @@ const HELP_REPLY = `AVA can help with:
 Commands:
 /start - Start chatting with AVA
 /help - Show this help menu
-/status - Check Boss Allan’s availability`;
+/status - Check Boss Allan’s availability
+/services - View website services and pricing
+/portfolio - View sample websites`;
+
+const SERVICES_REPLY = `Hi po! Si AVA ito, assistant ni Boss Allan.
+
+NextPage Digital website services:
+• Starter Website — starts at ₱999
+• Business Website — starts at ₱1,999
+• Custom Website — quotation depends on the project
+
+Simple, modern, at mobile-friendly websites po ang ginagawa namin para sa small businesses. Hindi po ako tumatanggap ng payment; si Boss Allan ang personal na magko-confirm ng payment instructions.`;
+
+const PORTFOLIO_REPLY = `Hi po! Si AVA ito, assistant ni Boss Allan. Narito po ang sample websites ng NextPage Digital:
+
+NextPage Digital:
+https://bitchevillamor-bot.github.io/Nextpage-Digital/
+
+Sample café/restaurant website:
+https://bitchevillamor-bot.github.io/Tuboy-s-Lopez-demo/`;
+
+const BUSINESS_INTRO = `Hi po! Si AVA ito, assistant ni Boss Allan. Gumagawa po ang NextPage Digital ng simple, modern, at mobile-friendly websites para sa small businesses.
+
+Introductory packages:
+• Starter Website — starts at ₱999
+• Business Website — starts at ₱1,999
+• Custom Website — quotation depends on the project
+
+Portfolio:
+NextPage Digital:
+https://bitchevillamor-bot.github.io/Nextpage-Digital/
+
+Sample café/restaurant website:
+https://bitchevillamor-bot.github.io/Tuboy-s-Lopez-demo/
+
+Kung interesado po kayo, maaari ko kayong tulungang kunin muna ang basic details para maipasa ko kay Boss Allan.`;
+
+const PAYMENT_REPLY =
+  "Hi po! Si AVA ito, assistant ni Boss Allan. Hindi po ako tumatanggap ng payment. Si Boss Allan po ang personal na magko-confirm ng tama at ligtas na payment instructions.";
+
+const SENSITIVE_REPLY =
+  "Para sa inyong seguridad, huwag po kayong magpadala ng OTP, password, banking credentials, card number, crypto seed phrase, o ibang sensitibong financial information. Si AVA ito, assistant ni Boss Allan, at hindi ko po kailangan ang mga detalyeng iyon.";
 
 const SLEEPING_STATUS_REPLY = `Status: SLEEPING
 Tulog pa po si Boss Allan sa oras na ito. Maaari po kayong mag-iwan ng message at ipapaabot ko ito sa kanya kapag available na siya.`;
@@ -41,6 +82,45 @@ const URGENT_PHRASES = [
   "kailangan agad",
   "nagmamadali",
 ];
+
+const BUSINESS_PHRASES = [
+  "magkano website",
+  "website price",
+  "gumagawa ba kayo ng website",
+  "interested ako",
+  "need ko website",
+  "may sample kayo",
+  "website for my business",
+  "gumawa ng website",
+  "web design",
+  "website service",
+];
+
+const INQUIRY_QUESTIONS = [
+  "Ano po ang pangalan ninyo?",
+  "Ano po ang pangalan ng inyong business?",
+  "Anong uri po ng business ito?",
+  "Ano po ang contact number o preferred contact method ninyo?",
+  "Anong klaseng website po ang gusto ninyo?",
+  "Anong mahahalagang pages o features po ang kailangan ninyo?",
+  "Kung komportable po kayong ibahagi, ano ang approximate budget ninyo? Maaari rin po ninyong sabihing “skip.”",
+];
+
+const INQUIRY_LABELS = [
+  "Name",
+  "Business",
+  "Business type",
+  "Contact",
+  "Website needed",
+  "Requested features",
+  "Budget",
+];
+
+// Sessions are intentionally temporary: they expire after 30 minutes and are
+// never written to logs or permanent storage.
+const inquirySessions = new Map();
+const SESSION_TTL_MS = 30 * 60 * 1000;
+const MAX_SESSIONS = 1_000;
 
 /** Return the current hour (0-23) in the Philippines. */
 export function getManilaHour(date = new Date()) {
@@ -63,13 +143,34 @@ export function isUrgent(text) {
   return URGENT_PHRASES.some((phrase) => normalized.includes(phrase));
 }
 
+export function isBusinessInquiry(text) {
+  const normalized = text.toLocaleLowerCase("en-US");
+  return BUSINESS_PHRASES.some((phrase) => normalized.includes(phrase));
+}
+
+function asksAboutPayment(text) {
+  return /(where|saan|paano|how).{0,30}(pay|payment|bayad)|(?:send|padala).{0,20}(payment|bayad)/i.test(
+    text,
+  );
+}
+
+function containsSensitiveInformation(text) {
+  const mentionsSecret =
+    /\b(otp|one[- ]time pin|password|passcode|cvv|cvc|seed phrase|recovery phrase|banking credentials?)\b/i.test(
+      text,
+    );
+  // Card numbers are normally 13–19 digits, allowing spaces and dashes.
+  const possibleCardNumber = /(?:\d[ -]?){13,19}/.test(text);
+  return mentionsSecret || possibleCardNumber;
+}
+
 /**
  * Read a Telegram command from the beginning of a message. Telegram adds the
  * bot name in group chats (for example, /status@AvaBossAllanbot), so the
  * optional @name is deliberately ignored. Commands are also case-insensitive.
  */
 export function getCommand(text) {
-  const match = text.match(/^\s*\/(start|help|status)(?:@[a-z0-9_]+)?(?=\s|$)/i);
+  const match = text.match(/^\s*\/(start|help|status|services|portfolio)(?:@[a-z0-9_]+)?(?=\s|$)/i);
   return match ? match[1].toLowerCase() : null;
 }
 
@@ -93,11 +194,77 @@ export function chooseReply(text, env, now = new Date()) {
   if (command === "start") return START_REPLY;
   if (command === "help") return HELP_REPLY;
   if (command === "status") return chooseStatusReply(env, now);
+  if (command === "services") return SERVICES_REPLY;
+  if (command === "portfolio") return PORTFOLIO_REPLY;
 
+  if (asksAboutPayment(text)) return PAYMENT_REPLY;
+  if (containsSensitiveInformation(text)) return SENSITIVE_REPLY;
   if (isUrgent(text)) return URGENT_REPLY;
+  if (isBusinessInquiry(text)) {
+    return `${BUSINESS_INTRO}\n\n${INQUIRY_QUESTIONS[0]}`;
+  }
+
   if (isSleepMode(now)) return SLEEP_REPLY;
   if (String(env.BUSY_MODE).toLowerCase() === "true") return BUSY_REPLY;
   return AVAILABLE_REPLY;
+}
+
+function inquirySummary(answers) {
+  const details = INQUIRY_LABELS.map(
+    (label, index) => `${label}: ${answers[index]}`,
+  ).join("\n");
+  return `Salamat po! Ito ang details na nakuha ko:\n\n${details}\n\nIpapaabot ko po ito kay Boss Allan para ma-review niya. Maraming salamat po sa interest ninyo sa NextPage Digital.`;
+}
+
+/** Select a reply and advance this chat's temporary business inquiry session. */
+export function handleMessage(text, chatId, env, now = new Date()) {
+  const command = getCommand(text);
+  // Commands remain available during an inquiry and do not consume an answer.
+  if (command) return chooseReply(text, env, now);
+  if (asksAboutPayment(text)) return PAYMENT_REPLY;
+
+  const session = inquirySessions.get(String(chatId));
+  if (session && now.getTime() - session.updatedAt > SESSION_TTL_MS) {
+    inquirySessions.delete(String(chatId));
+  }
+  const activeSession = inquirySessions.get(String(chatId));
+
+  if (containsSensitiveInformation(text)) {
+    const reminder = activeSession
+      ? `\n\n${INQUIRY_QUESTIONS[activeSession.answers.length]}`
+      : "";
+    return `${SENSITIVE_REPLY}${reminder}`;
+  }
+
+  if (!activeSession && isUrgent(text)) return chooseReply(text, env, now);
+
+  if (activeSession) {
+    const answer = text.trim();
+    if (!answer) return INQUIRY_QUESTIONS[activeSession.answers.length];
+    activeSession.answers.push(answer);
+    activeSession.updatedAt = now.getTime();
+    if (activeSession.answers.length === INQUIRY_QUESTIONS.length) {
+      inquirySessions.delete(String(chatId));
+      return inquirySummary(activeSession.answers);
+    }
+    return INQUIRY_QUESTIONS[activeSession.answers.length];
+  }
+
+  if (isBusinessInquiry(text)) {
+    // Keep the in-memory collection bounded if an isolate receives many chats.
+    if (inquirySessions.size >= MAX_SESSIONS) {
+      const oldestChatId = inquirySessions.keys().next().value;
+      inquirySessions.delete(oldestChatId);
+    }
+    inquirySessions.set(String(chatId), { answers: [], updatedAt: now.getTime() });
+    return `${BUSINESS_INTRO}\n\n${INQUIRY_QUESTIONS[0]}`;
+  }
+  return chooseReply(text, env, now);
+}
+
+/** Test helper; production sessions expire naturally. */
+export function clearInquirySessions() {
+  inquirySessions.clear();
 }
 
 // Compare without returning as soon as one character differs. This reduces
@@ -268,7 +435,7 @@ export default {
     await sendTelegramMessage(
       env.TELEGRAM_BOT_TOKEN,
       message.chat.id,
-      chooseReply(message.text, env),
+      handleMessage(message.text, message.chat.id, env),
     );
     return new Response("OK");
   },

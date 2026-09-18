@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  clearInquirySessions,
   chooseReply,
   chooseStatusReply,
   getCommand,
+  handleMessage,
+  isBusinessInquiry,
   isSleepMode,
   isUrgent,
 } from "../src/index.js";
@@ -22,6 +25,7 @@ test("uses Manila sleeping hours", () => {
 test("urgent messages take priority and Busy Mode is reusable", () => {
   const daytime = new Date("2026-01-01T04:00:00Z"); // noon in Manila
   assert.match(chooseReply("emergency", { BUSY_MODE: "true" }, daytime), /Nagmamadali/);
+  assert.match(chooseReply("urgent, need ko website", {}, daytime), /Nagmamadali/);
   assert.match(chooseReply("Hello", { BUSY_MODE: "true" }, daytime), /Busy/);
   assert.match(chooseReply("Hello", {}, daytime), /Natanggap/);
 });
@@ -30,6 +34,8 @@ test("recognizes commands regardless of case and ignores bot suffixes", () => {
   assert.equal(getCommand("/START"), "start");
   assert.equal(getCommand("/Help@AvaBossAllanbot"), "help");
   assert.equal(getCommand(" /STATUS@avabossallanbot "), "status");
+  assert.equal(getCommand("/Services"), "services");
+  assert.equal(getCommand("/portfolio@AvaBossAllanbot"), "portfolio");
   assert.equal(getCommand("/status-report"), null);
 });
 
@@ -40,7 +46,69 @@ test("returns the requested start and help messages", () => {
     "Hi, si AVA ito, assistant ni Boss Allan. Maaari po kayong mag-iwan ng message dito at ipapaabot ko ito sa kanya. Kung gusto ninyong malaman ang status niya, gamitin ang /status.",
   );
   assert.match(chooseReply("/HELP", {}, daytime), /^AVA can help with:/);
-  assert.match(chooseReply("/HELP", {}, daytime), /\/status - Check Boss Allan’s availability$/);
+  assert.match(chooseReply("/HELP", {}, daytime), /\/status - Check Boss Allan’s availability/);
+});
+
+test("help, services, and portfolio describe NextPage Digital", () => {
+  const daytime = new Date("2026-01-01T04:00:00Z");
+  assert.match(chooseReply("/help", {}, daytime), /\/services - View website services and pricing/);
+  assert.match(chooseReply("/help", {}, daytime), /\/portfolio - View sample websites/);
+  assert.match(chooseReply("/services", {}, daytime), /Starter Website — starts at ₱999/);
+  assert.match(chooseReply("/services", {}, daytime), /Hindi po ako tumatanggap ng payment/);
+  assert.match(chooseReply("/portfolio", {}, daytime), /Nextpage-Digital/);
+  assert.match(chooseReply("/portfolio", {}, daytime), /Tuboy-s-Lopez-demo/);
+});
+
+test("recognizes common business inquiry phrases", () => {
+  for (const phrase of [
+    "Magkano website?",
+    "Gumagawa ba kayo ng website",
+    "Need ko website for my business",
+    "May sample kayo?",
+    "Interested ako sa web design",
+  ]) {
+    assert.equal(isBusinessInquiry(phrase), true, phrase);
+  }
+  assert.equal(isBusinessInquiry("Hello po"), false);
+});
+
+test("collects an inquiry one answer at a time and returns a summary", () => {
+  clearInquirySessions();
+  const now = new Date("2026-01-01T04:00:00Z");
+  const chatId = 123;
+  const first = handleMessage("Magkano website?", chatId, {}, now);
+  assert.match(first, /Si AVA ito, assistant ni Boss Allan/);
+  assert.match(first, /Ano po ang pangalan ninyo\?$/);
+  assert.doesNotMatch(first, /pangalan ng inyong business\?/);
+
+  assert.match(handleMessage("Maria", chatId, {}, now), /pangalan ng inyong business/);
+  assert.match(handleMessage("Maria's Café", chatId, {}, now), /Anong uri/);
+  assert.match(handleMessage("Café", chatId, {}, now), /contact number/);
+  assert.match(handleMessage("Telegram", chatId, {}, now), /klaseng website/);
+  assert.match(handleMessage("Business website", chatId, {}, now), /pages o features/);
+  assert.match(handleMessage("Menu and contact page", chatId, {}, now), /approximate budget/);
+
+  const summary = handleMessage("₱2,000", chatId, {}, now);
+  assert.match(summary, /Name: Maria/);
+  assert.match(summary, /Business: Maria's Café/);
+  assert.match(summary, /Requested features: Menu and contact page/);
+  assert.match(summary, /Budget: ₱2,000/);
+  assert.match(summary, /Ipapaabot ko po ito kay Boss Allan/);
+});
+
+test("does not collect sensitive details or provide payment destinations", () => {
+  clearInquirySessions();
+  const now = new Date("2026-01-01T04:00:00Z");
+  assert.match(
+    handleMessage("Saan ko isesend ang payment?", 200, {}, now),
+    /Boss Allan po ang personal na magko-confirm/,
+  );
+
+  handleMessage("Need ko website", 201, {}, now);
+  const warning = handleMessage("My password is secret", 201, {}, now);
+  assert.match(warning, /huwag po kayong magpadala ng OTP/);
+  assert.match(warning, /Ano po ang pangalan ninyo\?$/);
+  assert.match(handleMessage("Juan", 201, {}, now), /pangalan ng inyong business/);
 });
 
 test("status follows Manila Sleep Mode before Busy Mode", () => {
