@@ -83,12 +83,102 @@ async function sendTelegramMessage(token, chatId, text) {
   }
 }
 
+async function callTelegramApi(token, method, body) {
+  const response = await fetch(
+    `https://api.telegram.org/bot${encodeURIComponent(token)}/${method}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
+
+  if (!response.ok) {
+    console.error(`Telegram API request failed with status ${response.status}`);
+    throw new Error("Telegram API request failed");
+  }
+
+  const result = await response.json();
+  if (result?.ok !== true) {
+    // Telegram descriptions are deliberately not logged or returned. Keeping
+    // errors generic ensures credentials cannot leak through an API response.
+    console.error("Telegram API rejected the request");
+    throw new Error("Telegram API rejected the request");
+  }
+  return result.result;
+}
+
+function configurationError(env) {
+  if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_WEBHOOK_SECRET) return null;
+  console.error("Required Worker secrets are not configured");
+  return new Response("Server configuration error", { status: 500 });
+}
+
+async function setupWebhook(url, env) {
+  const error = configurationError(env);
+  if (error) return error;
+
+  try {
+    await callTelegramApi(env.TELEGRAM_BOT_TOKEN, "setWebhook", {
+      url: `${url.origin}/telegram/webhook`,
+      secret_token: env.TELEGRAM_WEBHOOK_SECRET,
+    });
+    return new Response("AVA Telegram webhook connected successfully.");
+  } catch {
+    return new Response("Unable to connect Telegram webhook", { status: 502 });
+  }
+}
+
+async function webhookInfo(env) {
+  const error = configurationError(env);
+  if (error) return error;
+
+  try {
+    const info = await callTelegramApi(
+      env.TELEGRAM_BOT_TOKEN,
+      "getWebhookInfo",
+      {},
+    );
+    // Only return an explicit allowlist of non-secret status fields rather than
+    // forwarding Telegram's response wholesale.
+    return Response.json({
+      connected: typeof info?.url === "string" && info.url.length > 0,
+      url: info?.url ?? "",
+      pending_update_count: info?.pending_update_count ?? 0,
+      last_error_date: info?.last_error_date ?? null,
+      last_error_message: info?.last_error_message ?? null,
+    });
+  } catch {
+    return new Response("Unable to check Telegram webhook", { status: 502 });
+  }
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
     if (url.pathname === "/" && request.method === "GET") {
       return new Response("AVA Telegram backend is online");
+    }
+
+    if (url.pathname === "/telegram/setup") {
+      if (request.method !== "GET") {
+        return new Response("Method not allowed", {
+          status: 405,
+          headers: { Allow: "GET" },
+        });
+      }
+      return setupWebhook(url, env);
+    }
+
+    if (url.pathname === "/telegram/webhook-info") {
+      if (request.method !== "GET") {
+        return new Response("Method not allowed", {
+          status: 405,
+          headers: { Allow: "GET" },
+        });
+      }
+      return webhookInfo(env);
     }
 
     if (url.pathname !== "/telegram/webhook") {

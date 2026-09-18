@@ -67,23 +67,19 @@ After adding or changing secrets, deploying again is not normally required.
 
 ## 4. Register the Telegram webhook
 
-Use Telegram's `setWebhook` Bot API method from your own terminal. Substitute
-the values locally; do not save the resulting command in a tracked file or
-share its terminal history/output:
+After deploying and configuring both secrets, open this URL in a browser:
 
 ```sh
-curl --request POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
-  --data-urlencode "url=<WORKER_URL>/telegram/webhook" \
-  --data-urlencode "secret_token=<YOUR_WEBHOOK_SECRET>"
+<WORKER_URL>/telegram/setup
 ```
 
-A successful response includes `"ok":true`. Although this registration call
-must authenticate to Telegram, neither credential is sent to the Worker URL or
-committed to Git. Clear the command from shell history if your shell records it.
+The Worker securely calls Telegram's `setWebhook` method using its configured
+secrets and automatically registers `<WORKER_URL>/telegram/webhook`. A
+successful setup displays `AVA Telegram webhook connected successfully.`
 
-For an even safer alternative, prepare and execute the request in a local
-script that reads both values from untracked environment variables, rather than
-typing them on the command line.
+Open `<WORKER_URL>/telegram/webhook-info` to check the registered URL, connection
+state, pending update count, and last Telegram delivery error. This endpoint
+returns only an allowlist of status fields and never returns either secret.
 
 ## 5. Test AVA
 
