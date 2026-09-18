@@ -8,3 +8,8 @@ BUSY_MODE = "false"
 
 # Never put TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, or OPENAI_API_KEY here.
 # Add them with `npx wrangler secret put ...` as explained in README.md.
+
+# For durable webhook deduplication, create a KV namespace and add its ID here:
+# [[kv_namespaces]]
+# binding = "TELEGRAM_UPDATE_DEDUP"
+# id = "<your KV namespace ID>"
