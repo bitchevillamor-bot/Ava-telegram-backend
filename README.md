@@ -109,9 +109,17 @@ returns only an allowlist of status fields and never returns either secret.
 
 ## Business Inquiry Mode
 
-Send a message such as `magkano website`, `need ko website`, `web design`,
-`website service`, or `may sample kayo`. AVA introduces herself as **AVA,
-assistant ni Boss Allan**, explains NextPage Digital's packages, and shares:
+Send a natural Filipino or English message such as `Magkano po website?`,
+`Pwede po magpagawa ng website?`, `Need ko po website para sa business ko`,
+`May sample website po kayo?`, or `How much is a website?`. AVA recognizes a
+website subject (`website`, `web design`, `site`, or `webpage`) together with an
+inquiry intent such as price, interest, having one made, need, samples, or
+services. Requiring both kinds of keyword helps prevent an unrelated message
+with only a generic word such as `need`, `sample`, or `site` from starting the
+questionnaire.
+
+AVA then introduces herself as **AVA, assistant ni Boss Allan**, explains
+NextPage Digital's packages, and shares:
 
 - [NextPage Digital](https://bitchevillamor-bot.github.io/Nextpage-Digital/)
 - [Sample café/restaurant website](https://bitchevillamor-bot.github.io/Tuboy-s-Lopez-demo/)
