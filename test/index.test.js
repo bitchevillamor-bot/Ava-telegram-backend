@@ -244,9 +244,9 @@ test("status follows Manila Sleep Mode before Busy Mode", () => {
   const sleeping = new Date("2026-01-01T15:00:00Z"); // 11 PM in Manila
   const daytime = new Date("2026-01-01T04:00:00Z"); // noon in Manila
 
-  assert.match(chooseStatusReply({ BUSY_MODE: "true" }, sleeping), /^Status: SLEEPING/);
-  assert.match(chooseReply("/status", { BUSY_MODE: "TRUE" }, daytime), /^Status: BUSY/);
-  assert.match(chooseReply("/status", {}, daytime), /^Status: AVAILABLE/);
+  assert.match(chooseStatusReply({ AVA_MODE: "AUTO" }, sleeping), /^Mode: AUTO\nStatus: SLEEPING/);
+  assert.match(chooseReply("/status", { AVA_MODE: "BUSY" }, daytime), /^Mode: BUSY\nStatus: BUSY/);
+  assert.match(chooseReply("/status", { AVA_MODE: "ONLINE" }, daytime), /^Mode: ONLINE\nStatus: AVAILABLE/);
 });
 
 test("recognizes Azzy by username or configured Telegram user ID", () => {
@@ -418,4 +418,78 @@ test("webhook info returns only safe status fields", async (t) => {
     last_error_message: null,
   });
   assert.doesNotMatch(JSON.stringify(body), /bot-token|secret|must-not-leak/);
+});
+
+test("owner commands persist modes in AVA_STATE and /myid works for anyone", async (t) => {
+  const sent = [];
+  const state = new Map();
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    sent.push(JSON.parse(options.body));
+    return Response.json({ ok: true, result: {} });
+  });
+  const worker = (await import("../src/index.js")).default;
+  const env = {
+    TELEGRAM_BOT_TOKEN: "bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "secret",
+    BOSS_ALLAN_TELEGRAM_USER_ID: "100",
+    AVA_STATE: {
+      get: async (key) => state.get(key),
+      put: async (key, value) => state.set(key, value),
+    },
+  };
+  const request = (updateId, fromId, text) => businessWebhookRequest({
+    update_id: updateId,
+    message: { chat: { id: fromId, type: "private" }, from: { id: fromId }, text },
+  });
+
+  await worker.fetch(request(9001, 200, "/myid"), env);
+  assert.equal(sent.at(-1).text, "200");
+  await worker.fetch(request(9002, 200, "/busy"), env);
+  assert.equal(sent.at(-1).text, "This command is only available to Boss Allan.");
+  assert.equal(state.has("mode"), false);
+
+  await worker.fetch(request(9003, 100, "/busy"), env);
+  assert.equal(state.get("mode"), "BUSY");
+  assert.equal(sent.at(-1).text, "🤖 AVA is now in BUSY mode. I will automatically answer incoming private messages for Boss Allan.");
+  await worker.fetch(request(9004, 100, "/online"), env);
+  assert.equal(state.get("mode"), "ONLINE");
+  await worker.fetch(request(9005, 100, "/auto"), env);
+  assert.equal(state.get("mode"), "AUTO");
+});
+
+test("stored modes control business auto-replies and status", async (t) => {
+  const sent = [];
+  let mode = "ONLINE";
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    sent.push(JSON.parse(options.body));
+    return Response.json({ ok: true, result: {} });
+  });
+  const worker = (await import("../src/index.js")).default;
+  const env = {
+    TELEGRAM_BOT_TOKEN: "bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "secret",
+    BOSS_ALLAN_TELEGRAM_USER_ID: "100",
+    AVA_STATE: { get: async () => mode, put: async () => {} },
+  };
+  const businessUpdate = (id) => businessWebhookRequest({
+    update_id: id,
+    business_message: {
+      message_id: id,
+      business_connection_id: "mode-test",
+      chat: { id: 300, type: "private" },
+      from: { id: 300 },
+      text: "Hello",
+    },
+  });
+
+  await worker.fetch(businessUpdate(9101), env);
+  assert.equal(sent.length, 0);
+  mode = "BUSY";
+  await worker.fetch(businessUpdate(9102), env);
+  assert.match(sent.at(-1).text, /Busy pa po siya/);
+  await worker.fetch(businessWebhookRequest({
+    update_id: 9103,
+    message: { chat: { id: 100 }, from: { id: 100 }, text: "/status" },
+  }), env);
+  assert.match(sent.at(-1).text, /^Mode: BUSY\nStatus: BUSY/);
 });

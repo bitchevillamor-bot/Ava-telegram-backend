@@ -2,7 +2,7 @@
 
 A small, beginner-friendly Telegram webhook built with a Cloudflare Worker. AVA
 identifies herself as **AVA, assistant ni Boss Allan**, follows Manila time, and
-automatically uses Sleep Mode from 11:00 PM until 7:00 AM.
+automatically uses Sleep Mode from 11:00 PM until 7:00 AM. Boss Allan can switch AVA between **ONLINE**, **BUSY**, and **AUTO** directly from Telegram; Cloudflare KV persists the selected mode across restarts and deployments.
 
 AVA also includes a **Business Inquiry Mode** for NextPage Digital. It detects
 common Filipino and English website-service questions, shares introductory
@@ -27,6 +27,14 @@ package.json       development commands and Wrangler dependency
 2. Create a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
 3. Install a current Node.js LTS release and run `npm install` in this folder.
 4. Authenticate the Cloudflare CLI with `npx wrangler login`.
+
+Create the required state namespace before deploying:
+
+```sh
+npx wrangler kv namespace create AVA_STATE
+```
+
+Copy its ID into the `[[kv_namespaces]]` template in `wrangler.toml` and keep the binding name exactly `AVA_STATE`. This namespace stores only the current availability mode under the `mode` key.
 
 Do **not** paste a token or secret into source code, `wrangler.toml`, a commit,
 an issue, or a chat message. The `.gitignore` excludes common local secret
@@ -96,7 +104,8 @@ returns only an allowlist of status fields and never returns either secret.
    - `/start` introduces AVA and explains how to leave a message.
    - `/help` shows AVA's short help menu.
    - `/status` reports whether Boss Allan is **AVAILABLE**, **BUSY**, or
-     **SLEEPING**, using Manila time and the current Busy Mode setting.
+     **SLEEPING**, together with the current stored AVA mode.
+   - `/myid` returns the sender's numeric Telegram user ID.
    - `/services` shows NextPage Digital's website services and introductory
      prices (Starter from ₱999, Business from ₱1,999, and custom quotations).
    - `/portfolio` shares the NextPage Digital and café/restaurant sample sites.
@@ -106,6 +115,22 @@ returns only an allowlist of status fields and never returns either secret.
    `nagmamadali` to verify the urgent response.
 5. Open `<WORKER_URL>/` in a browser. It should say
    `AVA Telegram backend is online`.
+
+## Availability controls
+
+Store Boss Allan's numeric ID as an encrypted Worker secret:
+
+```sh
+npx wrangler secret put BOSS_ALLAN_TELEGRAM_USER_ID
+```
+
+AVA compares Telegram's numeric `from.id` exactly with that secret; usernames are never accepted as owner authentication. Boss Allan can use:
+
+- `/online` stores `ONLINE` and leaves ordinary connected-account messages for Boss Allan at every hour.
+- `/busy` stores `BUSY` and automatically sends the existing Busy Mode reply to incoming private connected-account messages.
+- `/auto` stores `AUTO`, sends Sleep Mode replies from 11:00 PM through 6:59 AM in `Asia/Manila`, and remains quiet for ordinary messages otherwise.
+
+Anyone may use `/myid` to discover their own numeric ID. Only the exact configured owner ID can change modes; everyone else receives `This command is only available to Boss Allan.` The `/status` response includes both the stored mode and the resulting **AVAILABLE**, **BUSY**, or **SLEEPING** status. Urgent, business inquiry, Azzy, voice, command, and safety handling remain active.
 
 ## Business Inquiry Mode
 
@@ -174,12 +199,7 @@ continue to work after the connection is enabled.
    `message`, `business_connection`, `business_message`,
    `edited_business_message`, and `deleted_business_messages` as allowed
    update types.
-5. Send Boss Allan a test message from a different personal account. From
-   **11:00 PM through 6:59 AM Asia/Manila**, AVA sends the sleeping response.
-   From **7:00 AM through 10:59 PM**, it sends the busy response only when
-   `BUSY_MODE = "true"`. When available, ordinary personal messages receive no
-   automatic reply; existing urgent, safety, and website-inquiry handling is
-   retained.
+5. Send Boss Allan a test message from a different personal account. Select `/auto` to test the Manila sleep schedule, `/busy` to answer ordinary private messages at every hour, or `/online` to leave those messages for Boss Allan. Existing urgent, safety, and website-inquiry handling is retained in every mode.
 
 AVA uses the incoming `business_connection_id` on Telegram's `sendMessage`
 request, which is what makes the response appear on behalf of Boss Allan's
@@ -231,12 +251,6 @@ content. If transcription fails, Azzy receives a warm text request to try
 again. If speech generation or voice delivery fails, AVA sends the same warm
 reply as text so the message is not lost. The built-in `coral` voice is used;
 AVA does not clone or imitate a real person's voice.
-
-## Optional Busy Mode
-
-Busy Mode is ready for later use. In `wrangler.toml`, set `BUSY_MODE = "true"`
-and run `npm run deploy`. Restore it to `"false"` and deploy when Boss Allan is
-available again. Urgent messages take priority over both Busy and Sleep modes.
 
 ## Security notes
 
