@@ -6,5 +6,5 @@ compatibility_date = "2026-09-18"
 [vars]
 BUSY_MODE = "false"
 
-# Never put TELEGRAM_BOT_TOKEN or TELEGRAM_WEBHOOK_SECRET in this file.
-# Add both with `npx wrangler secret put ...` as explained in README.md.
+# Never put TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET, or OPENAI_API_KEY here.
+# Add them with `npx wrangler secret put ...` as explained in README.md.

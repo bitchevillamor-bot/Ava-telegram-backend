@@ -3,13 +3,32 @@ import assert from "node:assert/strict";
 import {
   clearInquirySessions,
   chooseReply,
+  chooseAzzyVoiceReply,
   chooseStatusReply,
   getCommand,
   handleMessage,
   isBusinessInquiry,
+  isAzzy,
   isSleepMode,
   isUrgent,
 } from "../src/index.js";
+
+function voiceWebhookRequest(username = "twoseventwothree") {
+  return new Request("https://ava.example/telegram/webhook", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "X-Telegram-Bot-Api-Secret-Token": "secret",
+    },
+    body: JSON.stringify({
+      message: {
+        chat: { id: 2723 },
+        from: { id: 99, username },
+        voice: { file_id: "voice-file" },
+      },
+    }),
+  });
+}
 
 test("detects urgent phrases without regard to case", () => {
   assert.equal(isUrgent("KAILANGAN AGAD ang sagot"), true);
@@ -142,6 +161,117 @@ test("status follows Manila Sleep Mode before Busy Mode", () => {
   assert.match(chooseStatusReply({ BUSY_MODE: "true" }, sleeping), /^Status: SLEEPING/);
   assert.match(chooseReply("/status", { BUSY_MODE: "TRUE" }, daytime), /^Status: BUSY/);
   assert.match(chooseReply("/status", {}, daytime), /^Status: AVAILABLE/);
+});
+
+test("recognizes Azzy by username or configured Telegram user ID", () => {
+  assert.equal(isAzzy({ id: 1, username: "TwoSevenTwoThree" }, {}), true);
+  assert.equal(isAzzy({ id: 2723 }, { AZZY_TELEGRAM_USER_ID: "2723" }), true);
+  assert.equal(isAzzy({ id: 2, username: "someone_else" }, {}), false);
+});
+
+test("Azzy voice replies preserve urgent, sleeping, and busy priority", () => {
+  const daytime = new Date("2026-01-01T04:00:00Z");
+  const sleeping = new Date("2026-01-01T15:00:00Z");
+  assert.match(chooseAzzyVoiceReply("urgent po", {}, sleeping), /urgent o importante/);
+  assert.match(chooseAzzyVoiceReply("hello", {}, sleeping), /Tulog pa si Tatay/);
+  assert.match(chooseAzzyVoiceReply("hello", { BUSY_MODE: "true" }, daytime), /Busy pa si Tatay/);
+  assert.match(chooseAzzyVoiceReply("hello", {}, daytime), /Available si Tatay/);
+});
+
+test("Azzy voice note is transcribed, notified, and answered with voice", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith("/getFile")) {
+      return Response.json({ ok: true, result: { file_path: "voice/file.oga" } });
+    }
+    if (String(url).includes("/file/bot")) {
+      return new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "audio/ogg" },
+      });
+    }
+    if (String(url).endsWith("/audio/transcriptions")) {
+      assert.equal(options.headers.Authorization, "Bearer openai-secret");
+      assert.equal(options.body.get("model"), "gpt-4o-mini-transcribe");
+      return Response.json({ text: "Importante po ito" });
+    }
+    if (String(url).endsWith("/audio/speech")) {
+      const body = JSON.parse(options.body);
+      assert.equal(body.voice, "coral");
+      assert.equal(body.response_format, "opus");
+      assert.match(body.input, /urgent o importante/);
+      return new Response(new Uint8Array([4, 5]), {
+        headers: { "content-type": "audio/ogg" },
+      });
+    }
+    return Response.json({ ok: true, result: {} });
+  });
+
+  const worker = (await import("../src/index.js")).default;
+  const response = await worker.fetch(voiceWebhookRequest(), {
+    TELEGRAM_BOT_TOKEN: "bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "secret",
+    OPENAI_API_KEY: "openai-secret",
+    BOSS_ALLAN_CHAT_ID: "allan-chat",
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.filter(({ url }) => url.endsWith("/sendVoice")).length, 1);
+  const notification = calls.find(({ url, options }) =>
+    url.endsWith("/sendMessage") && JSON.parse(options.body).chat_id === "allan-chat"
+  );
+  assert.equal(JSON.parse(notification.options.body).text, "💜 Voice message from Azzy:\nImportante po ito");
+});
+
+test("transcription failure sends Azzy a warm text fallback", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith("/getFile")) {
+      return Response.json({ ok: true, result: { file_path: "voice/file.oga" } });
+    }
+    if (String(url).includes("/file/bot")) return new Response("audio");
+    if (String(url).endsWith("/audio/transcriptions")) return new Response("", { status: 502 });
+    return Response.json({ ok: true, result: {} });
+  });
+
+  const worker = (await import("../src/index.js")).default;
+  await worker.fetch(voiceWebhookRequest(), {
+    TELEGRAM_BOT_TOKEN: "bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "secret",
+    OPENAI_API_KEY: "openai-secret",
+  });
+  const fallback = calls.find(({ url }) => url.endsWith("/sendMessage"));
+  assert.match(JSON.parse(fallback.options.body).text, /Paki-send ulit/);
+  assert.equal(calls.some(({ url }) => url.endsWith("/sendVoice")), false);
+});
+
+test("speech generation failure sends the selected reply as text", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith("/getFile")) {
+      return Response.json({ ok: true, result: { file_path: "voice/file.oga" } });
+    }
+    if (String(url).includes("/file/bot")) return new Response("audio");
+    if (String(url).endsWith("/audio/transcriptions")) {
+      return Response.json({ text: "Hello po" });
+    }
+    if (String(url).endsWith("/audio/speech")) {
+      return new Response("", { status: 503 });
+    }
+    return Response.json({ ok: true, result: {} });
+  });
+
+  const worker = (await import("../src/index.js")).default;
+  await worker.fetch(voiceWebhookRequest(), {
+    TELEGRAM_BOT_TOKEN: "bot-token",
+    TELEGRAM_WEBHOOK_SECRET: "secret",
+    OPENAI_API_KEY: "openai-secret",
+  });
+  const fallback = calls.find(({ url }) => url.endsWith("/sendMessage"));
+  assert.match(JSON.parse(fallback.options.body).text, /Si AVA ito/);
+  assert.equal(calls.some(({ url }) => url.endsWith("/sendVoice")), false);
 });
 
 test("setup registers the current Worker webhook without exposing secrets", async (t) => {

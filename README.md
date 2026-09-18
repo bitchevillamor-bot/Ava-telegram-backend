@@ -135,8 +135,51 @@ minutes, and may disappear sooner if Cloudflare recycles the isolate. For a
 production CRM workflow, the completed summary should later be forwarded to a
 secure, purpose-built lead store with an appropriate privacy policy.
 
-Only text messages receive a reply. Other Telegram updates are acknowledged so
-Telegram does not repeatedly deliver them.
+Other unsupported Telegram updates are acknowledged so Telegram does not
+repeatedly deliver them.
+
+## Azzy voice notes
+
+AVA recognizes Azzy by the Telegram username **`twoseventwothree`**. You may
+also configure `AZZY_TELEGRAM_USER_ID` (recommended because a numeric account
+ID does not change when a username changes). When Azzy sends a voice note, AVA:
+
+1. asks Telegram `getFile` for its temporary path and downloads it directly;
+2. sends the in-memory audio to OpenAI speech-to-text;
+3. applies the existing urgent-message, Manila Sleep Mode, and Busy Mode rules;
+4. creates a warm, gentle spoken reply with OpenAI text-to-speech; and
+5. replies through Telegram `sendVoice`—voice in, voice out.
+
+Add the OpenAI credential only as a Cloudflare secret:
+
+```sh
+npx wrangler secret put OPENAI_API_KEY
+```
+
+Never place the value in `.env.example`, `wrangler.toml`, source code, logs, or
+commits. If desired, configure `AZZY_TELEGRAM_USER_ID` and
+`BOSS_ALLAN_CHAT_ID` as Cloudflare secrets as well. When the latter is set,
+Allan receives a private text notification containing the transcription;
+transcriptions that are Telegram commands are never forwarded.
+
+### Test an Azzy voice message
+
+1. Deploy after setting `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, and
+   `OPENAI_API_KEY`, and register the webhook as described above.
+2. From the `twoseventwothree` account (or the account whose numeric ID is in
+   `AZZY_TELEGRAM_USER_ID`), hold Telegram's microphone button and send a short
+   voice note such as “Hello po.” AVA should answer with a voice note matching
+   the current Available, Busy, or Sleeping status.
+3. Send another voice note containing “urgent” or “importante” to check the
+   urgent spoken response. If `BOSS_ALLAN_CHAT_ID` is configured, verify that
+   chat receives `💜 Voice message from Azzy:` followed by the transcription.
+
+The downloaded note and generated reply remain in request memory only and are
+never written to permanent storage. AVA does not log audio or full message
+content. If transcription fails, Azzy receives a warm text request to try
+again. If speech generation or voice delivery fails, AVA sends the same warm
+reply as text so the message is not lost. The built-in `coral` voice is used;
+AVA does not clone or imitate a real person's voice.
 
 ## Optional Busy Mode
 
@@ -148,7 +191,8 @@ available again. Urgent messages take priority over both Busy and Sleep modes.
 
 - The webhook accepts only `POST` and verifies Telegram's
   `X-Telegram-Bot-Api-Secret-Token` header.
-- Both required credentials live only in Cloudflare's encrypted secret store.
+- Telegram credentials and `OPENAI_API_KEY` live only in Cloudflare's encrypted
+  secret store.
 - The Worker does not log message bodies, bot tokens, or secrets.
 - AVA never requests OTPs, passwords, card or banking credentials, crypto seed
   phrases, or other sensitive financial information. If one is sent during an

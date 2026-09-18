@@ -74,6 +74,20 @@ Busy pa po si Boss Allan sa oras na ito. Maaari po kayong mag-iwan ng message at
 const AVAILABLE_STATUS_REPLY = `Status: AVAILABLE
 Available po si Boss Allan sa oras na ito. Maaari po ninyong iwan ang inyong message.`;
 
+const AZZY_USERNAME = "twoseventwothree";
+const VOICE_TRANSCRIPTION_FALLBACK =
+  "Hi Azzy. Si AVA ito. Hindi ko po malinaw na naintindihan ang voice note mo. Paki-send ulit kapag maaari, at pakikinggan ko itong mabuti.";
+const AZZY_VOICE_REPLIES = {
+  available:
+    "Hi Azzy. Si AVA ito, assistant ni Tatay Allan. Available si Tatay ngayon. Ipapasa ko sa kanya ang message mo. Sana okay ka palagi.",
+  busy:
+    "Hi Azzy. Si AVA ito, assistant ni Tatay Allan. Busy pa si Tatay ngayon pero ipapaabot ko agad ang message mo kapag available na siya. Ingat ka palagi ha.",
+  sleeping:
+    "Hi Azzy. Si AVA ito, assistant ni Tatay Allan. Tulog pa si Tatay ngayon pero iingatan ko ang message mo at ipapaabot ko sa kanya kapag gising na siya. Ingat ka palagi ha.",
+  urgent:
+    "Azzy, nabasa at narinig ko ang message mo. Si AVA ito. Kung urgent o importante ito, ipapaabot ko agad kay Tatay Allan.",
+};
+
 const URGENT_PHRASES = [
   "urgent",
   "emergency",
@@ -208,6 +222,26 @@ export function chooseReply(text, env, now = new Date()) {
   return AVAILABLE_REPLY;
 }
 
+/** Match Azzy by her public username or an optional, more durable user ID. */
+export function isAzzy(from, env) {
+  const username = String(from?.username ?? "").replace(/^@/, "").toLowerCase();
+  const configuredId = String(env.AZZY_TELEGRAM_USER_ID ?? "").trim();
+  return (
+    username === AZZY_USERNAME ||
+    (configuredId !== "" && String(from?.id) === configuredId)
+  );
+}
+
+/** Apply the same urgent, Sleep Mode, and Busy Mode priority used by AVA. */
+export function chooseAzzyVoiceReply(transcription, env, now = new Date()) {
+  if (isUrgent(transcription)) return AZZY_VOICE_REPLIES.urgent;
+  if (isSleepMode(now)) return AZZY_VOICE_REPLIES.sleeping;
+  if (String(env.BUSY_MODE).toLowerCase() === "true") {
+    return AZZY_VOICE_REPLIES.busy;
+  }
+  return AZZY_VOICE_REPLIES.available;
+}
+
 function inquirySummary(answers) {
   const details = INQUIRY_LABELS.map(
     (label, index) => `${label}: ${answers[index]}`,
@@ -323,6 +357,126 @@ async function callTelegramApi(token, method, body) {
   return result.result;
 }
 
+async function transcribeTelegramVoice(token, voice, openAiKey) {
+  // Telegram's Bot API only supports downloading files up to 20 MB. Reject an
+  // oversized declared payload before making any provider requests.
+  if (Number(voice.file_size ?? 0) > 20 * 1024 * 1024) {
+    throw new Error("Telegram voice file is too large");
+  }
+  const file = await callTelegramApi(token, "getFile", {
+    file_id: voice.file_id,
+  });
+  // Accept only Telegram's relative file paths. This keeps the download pinned
+  // to Telegram even if an unexpected API response is ever received.
+  if (
+    typeof file?.file_path !== "string" ||
+    file.file_path.startsWith("/") ||
+    file.file_path.includes("..") ||
+    !/^[a-zA-Z0-9_./-]+$/.test(file.file_path)
+  ) {
+    throw new Error("Telegram returned an invalid voice file path");
+  }
+
+  const audioResponse = await fetch(
+    `https://api.telegram.org/file/bot${encodeURIComponent(token)}/${file.file_path}`,
+  );
+  if (!audioResponse.ok) throw new Error("Unable to download Telegram voice file");
+
+  // The Blob exists only for this request and is never written to storage.
+  const audio = await audioResponse.blob();
+  const form = new FormData();
+  form.append("model", "gpt-4o-mini-transcribe");
+  form.append("file", audio, "voice.ogg");
+  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${openAiKey}` },
+    body: form,
+  });
+  if (!response.ok) throw new Error("OpenAI transcription failed");
+  const result = await response.json();
+  if (typeof result?.text !== "string" || !result.text.trim()) {
+    throw new Error("OpenAI returned an empty transcription");
+  }
+  return result.text.trim();
+}
+
+async function createVoiceReply(text, openAiKey) {
+  const response = await fetch("https://api.openai.com/v1/audio/speech", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${openAiKey}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini-tts",
+      voice: "coral",
+      input: text,
+      instructions:
+        "Speak as AVA, a warm, gentle, caring female assistant. Sound natural and reassuring. Do not imitate any real person.",
+      response_format: "opus",
+    }),
+  });
+  if (!response.ok) throw new Error("OpenAI speech generation failed");
+  return response.blob();
+}
+
+async function sendTelegramVoice(token, chatId, audio) {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("voice", audio, "ava-reply.opus");
+  const response = await fetch(
+    `https://api.telegram.org/bot${encodeURIComponent(token)}/sendVoice`,
+    { method: "POST", body: form },
+  );
+  if (!response.ok) throw new Error("Telegram voice delivery failed");
+  const result = await response.json();
+  if (result?.ok !== true) throw new Error("Telegram rejected voice delivery");
+}
+
+async function handleAzzyVoice(message, env) {
+  let transcription;
+  try {
+    if (!env.OPENAI_API_KEY) throw new Error("OpenAI is not configured");
+    transcription = await transcribeTelegramVoice(
+      env.TELEGRAM_BOT_TOKEN,
+      message.voice,
+      env.OPENAI_API_KEY,
+    );
+  } catch {
+    // Never log audio, the transcription, or provider response bodies.
+    console.error("Azzy voice transcription failed");
+    await sendTelegramMessage(
+      env.TELEGRAM_BOT_TOKEN,
+      message.chat.id,
+      VOICE_TRANSCRIPTION_FALLBACK,
+    );
+    return;
+  }
+
+  // A voice note that transcribes to a command is handled locally and is not
+  // forwarded. All other transcriptions may be privately notified to Allan.
+  if (env.BOSS_ALLAN_CHAT_ID && !getCommand(transcription)) {
+    try {
+      await sendTelegramMessage(
+        env.TELEGRAM_BOT_TOKEN,
+        env.BOSS_ALLAN_CHAT_ID,
+        `💜 Voice message from Azzy:\n${transcription}`,
+      );
+    } catch {
+      console.error("Unable to notify Boss Allan about Azzy's voice message");
+    }
+  }
+
+  const reply = chooseAzzyVoiceReply(transcription, env);
+  try {
+    const audio = await createVoiceReply(reply, env.OPENAI_API_KEY);
+    await sendTelegramVoice(env.TELEGRAM_BOT_TOKEN, message.chat.id, audio);
+  } catch {
+    console.error("Azzy voice reply generation or delivery failed");
+    await sendTelegramMessage(env.TELEGRAM_BOT_TOKEN, message.chat.id, reply);
+  }
+}
+
 function configurationError(env) {
   if (env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_WEBHOOK_SECRET) return null;
   console.error("Required Worker secrets are not configured");
@@ -425,7 +579,16 @@ export default {
     }
 
     const message = update?.message;
-    if (typeof message?.text !== "string" || message?.chat?.id == null) {
+    if (message?.chat?.id == null) {
+      return new Response("OK");
+    }
+
+    if (message.voice?.file_id && isAzzy(message.from, env)) {
+      await handleAzzyVoice(message, env);
+      return new Response("OK");
+    }
+
+    if (typeof message.text !== "string") {
       // Telegram also sends stickers, photos, and other update types. Acknowledge
       // those safely without trying to reply as though they were text.
       return new Response("OK");
