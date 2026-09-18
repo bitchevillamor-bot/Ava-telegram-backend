@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chooseReply, isSleepMode, isUrgent } from "../src/index.js";
+import {
+  chooseReply,
+  chooseStatusReply,
+  getCommand,
+  isSleepMode,
+  isUrgent,
+} from "../src/index.js";
 
 test("detects urgent phrases without regard to case", () => {
   assert.equal(isUrgent("KAILANGAN AGAD ang sagot"), true);
@@ -18,6 +24,32 @@ test("urgent messages take priority and Busy Mode is reusable", () => {
   assert.match(chooseReply("emergency", { BUSY_MODE: "true" }, daytime), /Nagmamadali/);
   assert.match(chooseReply("Hello", { BUSY_MODE: "true" }, daytime), /Busy/);
   assert.match(chooseReply("Hello", {}, daytime), /Natanggap/);
+});
+
+test("recognizes commands regardless of case and ignores bot suffixes", () => {
+  assert.equal(getCommand("/START"), "start");
+  assert.equal(getCommand("/Help@AvaBossAllanbot"), "help");
+  assert.equal(getCommand(" /STATUS@avabossallanbot "), "status");
+  assert.equal(getCommand("/status-report"), null);
+});
+
+test("returns the requested start and help messages", () => {
+  const daytime = new Date("2026-01-01T04:00:00Z");
+  assert.equal(
+    chooseReply("/start@AvaBossAllanbot", {}, daytime),
+    "Hi, si AVA ito, assistant ni Boss Allan. Maaari po kayong mag-iwan ng message dito at ipapaabot ko ito sa kanya. Kung gusto ninyong malaman ang status niya, gamitin ang /status.",
+  );
+  assert.match(chooseReply("/HELP", {}, daytime), /^AVA can help with:/);
+  assert.match(chooseReply("/HELP", {}, daytime), /\/status - Check Boss Allan’s availability$/);
+});
+
+test("status follows Manila Sleep Mode before Busy Mode", () => {
+  const sleeping = new Date("2026-01-01T15:00:00Z"); // 11 PM in Manila
+  const daytime = new Date("2026-01-01T04:00:00Z"); // noon in Manila
+
+  assert.match(chooseStatusReply({ BUSY_MODE: "true" }, sleeping), /^Status: SLEEPING/);
+  assert.match(chooseReply("/status", { BUSY_MODE: "TRUE" }, daytime), /^Status: BUSY/);
+  assert.match(chooseReply("/status", {}, daytime), /^Status: AVAILABLE/);
 });
 
 test("setup registers the current Worker webhook without exposing secrets", async (t) => {
