@@ -1,0 +1,10 @@
+name = "ava-telegram-backend"
+main = "src/index.js"
+compatibility_date = "2026-09-18"
+
+# Optional reusable Busy Mode. Change this to "true" and redeploy when needed.
+[vars]
+BUSY_MODE = "false"
+
+# Never put TELEGRAM_BOT_TOKEN or TELEGRAM_WEBHOOK_SECRET in this file.
+# Add both with `npx wrangler secret put ...` as explained in README.md.
